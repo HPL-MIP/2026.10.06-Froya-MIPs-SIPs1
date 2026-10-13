@@ -17,7 +17,7 @@ flowchart TD
     A[Upload Ad HTML Creatives] --> B[HTML5 FileReader]
     B --> C[Run Compliance Engine: runFix]
     
-    subgraph S["8-Step Automated Fix Engine"]
+    subgraph S["11-Step Automated Fix Engine"]
         C --> D1["1. Bridge Declaration: Clean URLs, Deduplicate & Move to &lt;head&gt;"]
         D1 --> D2["2. Readiness Guards: Inject isMraidUsable & initializeWhenMraidReady"]
         D2 --> D3["3. State Check: Verify mraid.getState() === 'loading' Compliance"]
@@ -26,18 +26,23 @@ flowchart TD
         D5 --> D6["6. ClickTag Normalization: clickTag || clickTag1 || clickthrough"]
         D6 --> D7["7. Media Viewability: Inject isViewable() & viewableChange Sync"]
         D7 --> D8["8. iOS Tap Deduplication: Validate 500ms Touch Debounce"]
+        D8 --> D9["9. External Navigation Elimination: Rewrite location.href/assign/replace"]
+        D9 --> D10["10. External Network Audit: Scan fetch/XHR/WS/beacon & remote URLs (BLOCKING)"]
+        D10 --> D11["11. Asset Inlining Audit: Enforce Base64 / Base122 Only (BLOCKING)"]
     end
     
     S --> E[Calculate Compliance Stats & Diff Records]
-    E --> F[Render Interactive UI Cards, Tabs & Diff Accordion]
-    F --> G[Export Fixed Creative: [name]_mraid_fixed.html]
+    E --> F[Render UI Cards, Violation Audit Report & Diff Accordion]
+    F --> H{Any External Calls or Non-B64/B122 Assets?}
+    H -- "Yes (Fail)" --> I["🚫 Export Blocked (Show Detailed Violations to Screen)"]
+    H -- "No (Clean)" --> G["✅ Enable Export: [name]_mraid_fixed.html"]
 ```
 
 ---
 
 ## 2. Detailed Breakdown: Automated Fixes in `mraid fixer.html`
 
-The fixer engine executes 8 specialized checks in sequence. Below is how each check diagnoses violations and automatically rewrites the code.
+The fixer engine executes 11 specialized checks in sequence. Below is how each check diagnoses violations and automatically rewrites the code.
 
 ---
 
@@ -175,7 +180,7 @@ The fixer engine executes 8 specialized checks in sequence. Below is how each ch
              console.warn("[MRAID] bridge is not ready, attempting open anyway");
            }
            try {
-             if (url) { mraid.open(url); } else { mraid.open(); }
+             mraid.open(url);
              return true;
            } catch(err) {
              console.error("[MRAID] open threw", err);
@@ -263,6 +268,56 @@ The fixer engine executes 8 specialized checks in sequence. Below is how each ch
 
 ---
 
+### Check 9: External Navigation & Redirect Elimination (`location.href` / `assign` / `replace`)
+* **Validator Rule**: Mobile playable ads must not redirect top-level or window navigation directly via `location.href = ...`, `location.assign(...)`, or `location.replace(...)`. All navigation must be routed through `mraid.open()` to allow host apps to handle click conversions.
+* **Violations Detected**: Direct window/frame location assignments (`window.location.href = url`, `location.assign(url)`, `location.replace(url)`).
+* **Automated Fix**:
+  - Rewrites all location redirects to `handleMraidOpen(...)`:
+    ```diff
+    - window.location.href = "https://example.com";
+    + handleMraidOpen("https://example.com");
+    ```
+
+---
+
+### Check 10: External Network Calls & Remote Endpoints Checker (Blocking Audit)
+* **Validator Rule**: Major ad networks (AppLovin MIP, ironSource, Unity, Google) require playable creatives to be completely self-contained single-file HTML (offline-capable). Remote network APIs (`fetch`, `XMLHttpRequest`, `navigator.sendBeacon`, `WebSocket`, `EventSource`, `RTCPeerConnection`) and external CDN dependencies (remote `<script>`, `<link>`, `<img>`, `<video>`, `<audio>`, CSS `url()`, `@import`) trigger strict policy rejections.
+* **Violations Detected**:
+  1. Remote network API requests: `fetch("https://...")`, `XMLHttpRequest`, `navigator.sendBeacon()`, `WebSocket`, `EventSource`, `RTCPeerConnection`.
+  2. Remote `<script>` CDN tags (excluding `mraid.js`).
+  3. Remote `<link>` stylesheets and Google Fonts.
+  4. Remote media tags (`<img src="https://...">`, `<video>`, `<audio>`, `<iframe>`, `<embed>`, `<object>`).
+  5. Remote CSS `\burl("https://...")` and `@import` assets.
+* **False-Positive Prevention**:
+  - `fetch()` with inlined Base64/Base122 data URIs (`data:...;base64,...`), in-memory blob URIs (`blob:...`), or runtime variables/template expressions (`fetch(e)`, `fetch(blobUrl)`, `fetch(\`data:...;base64,${data}\`)`) are safely recognized as offline assets and **not** falsely flagged.
+  - Word boundary `\burl(` prevents matching JavaScript APIs like `URL.createObjectURL(blob)` as CSS `url()` calls.
+* **Automated Audit & Export Blocker**:
+  - Itemizes all remote endpoints and dependencies with exact line numbers, code snippets, and remediation steps.
+  - **Flagged as Critical (`FAIL`)**: If any external calls exist, the export button is disabled and a detailed audit report is rendered on screen. Export is blocked until all external calls are resolved.
+
+---
+
+### Check 11: Asset Inlining Compliance: Base64 / Base122 Only (Blocking Audit)
+* **Validator Rule**: All multimedia assets (textures, sprites, audio clips, fonts, vector files, 3D models) must be inlined directly within the HTML document as Base64 data URIs (`data:...;base64,...`) or Base122 encoded strings (`data:...;base122,...` / Base122 decoder). Any local/relative file reference (e.g. `<img src="hero.png">`, `new Audio("sound.mp3")`, `url("bg.jpg")`, `fetch("model.glb")`) will fail at runtime because only the `.html` file is deployed to the ad SDK container.
+* **Violations Detected**:
+  1. Local/relative `<img src="...">` tags lacking compliant Base64 or Base122 data URIs.
+  2. Local/relative `<video>`, `<audio>`, or `<source>` media paths.
+  3. Local/relative `<link rel="stylesheet" href="...">` files.
+  4. Local/relative `<script src="...">` files (excluding `mraid.js`).
+  5. CSS `url("...")` references to unbundled local files (`.png`, `.jpg`, `.webp`, `.woff2`, `.mp3`, etc.).
+  6. JavaScript relative file path instantiations (`new Audio("sound.mp3")`, `image.src = "hero.png"`).
+  7. Unbundled local file targets in `fetch()` (e.g., `fetch("model.glb")`, `fetch("./data.json")`).
+* **Base64 / Base122 Compliance & False-Positive Elimination**:
+  - CSS `url()` and `fetch()` arguments are verified:
+    - Base64 data URIs (`data:...;base64,...`), Base122 data URIs (`data:...;base122,...`), inlined SVG data URIs (`data:image/svg+xml...`), and in-memory blobs (`blob:...`) pass with zero false positives.
+    - Bundler template literals (e.g., ``url(`${_hero_png}`)``, ``fetch(`${modelB64}`)``) and JS variable arguments (`fetch(assetUrl)`) are recognized as bundled Base64 assets and pass cleanly.
+    - If `url()` or `fetch()` targets an un-encoded relative path (e.g., `url("hero.png")` or `fetch("model.glb")`), it is immediately flagged with line number, snippet, and Base64 conversion remedy.
+* **Automated Audit & Export Blocker**:
+  - Itemizes detected unbundled relative files and non-Base64/Base122 references with exact line numbers and code snippets.
+  - **Flagged as Critical (`FAIL`)**: If any non-Base64/non-Base122 assets exist, export is disabled and a detailed audit inspector is displayed on screen.
+
+---
+
 ## 3. Implementation Details in `mraid fixer.html`
 
 [`mraid fixer.html`](file:///c:/Users/Irvin%20Udang/Desktop/MRAID%20Fixer/mraid%20fixer.html) includes specific design and architectural patterns to safely modify ad code in the browser:
@@ -273,8 +328,11 @@ The fixer engine executes 8 specialized checks in sequence. Below is how each ch
 2. **Non-Destructive Diff Tracking**:
    Every transformation records an entry in a `diffs` array containing `label`, `before`, and `after` snippets. The tool renders these changes in an interactive accordion view, allowing developers to inspect exact code adjustments before exporting.
 
-3. **Multi-File Batch Workflow**:
-   Supports concurrent drag-and-drop or batch file selection. Files are parsed asynchronously with progress bars, presented in categorized tabs with status badges (`✓ clean`, `X fixes`, `X warn`), and exportable individually or in bulk via Blob downloads.
+3. **Multi-File Batch Workflow & Export Blocking**:
+   Supports concurrent drag-and-drop or batch file selection. Files are parsed asynchronously with progress bars, presented in categorized tabs with status badges (`✓ clean`, `X fixes`, `X warn`, `X blocked`). If critical violations (external calls or unbundled/non-Base64/Base122 assets) are present, single-file and batch exports are strictly disabled until the creative is fully self-contained.
+
+4. **Visual Detailed Violation Inspector & Asset Report**:
+   Renders an interactive breakdown directly on screen with category filter pills (`All`, `External Calls`, `Non-B64/B122 Assets`), line numbers, code snippets, and remediation guidance.
 
 ---
 
@@ -292,6 +350,9 @@ The fixer engine executes 8 specialized checks in sequence. Below is how each ch
 | **Click Engine** | Missing click handler | Standardized `handleMraidOpen` | Injects full `handleMraidOpen()` engine |
 | **Media Lifecycle** | Media plays in background | Pauses when `isViewable() === false` | Injects `viewableChange` audio/video pause sync |
 | **iOS Touch** | Rapid multi-fire events | 500ms tap deduplication | Validates `handleTap` debounce pattern |
+| **Navigation Redirects** | `location.href = url` / `assign()` | `handleMraidOpen(url)` | Rewrites direct navigation to `handleMraidOpen()` |
+| **External Dependencies** | Remote CDNs, XHR, fetch, external img/fonts | 100% self-contained single-file HTML | **FLAGS FAIL & BLOCKS EXPORT**: detailed on-screen report |
+| **Asset Inlining** | Unbundled relative assets or non-B64/B122 | Inline Base64 (`data:`) or Base122 | **FLAGS FAIL & BLOCKS EXPORT**: detailed on-screen report |
 
 ---
 
@@ -321,8 +382,12 @@ When building complex playables (e.g. game creatives with an embedded end card):
 Before publishing creatives fixed with [`mraid fixer.html`](file:///c:/Users/Irvin%20Udang/Desktop/MRAID%20Fixer/mraid%20fixer.html):
 - [x] Creative contains `<script src="mraid.js"></script>` strictly in `<head>`.
 - [x] Zero instances of `window.open()` exist in application code.
+- [x] Zero direct `location.href` or `location.assign()` external redirect calls.
 - [x] `handleMraidOpen()` wraps all CTA interactions.
 - [x] All `mraid.open()` calls supply a valid destination string from the `clickTag` chain.
 - [x] Initial loading states check `mraid.getState() === "loading"`.
 - [x] Audio and video elements pause when `mraid.isViewable()` returns `false`.
 - [x] Touch interactions implement debouncing for iOS Safari event sequences.
+- [x] No unauthorized external network APIs (`fetch`, `XMLHttpRequest`, `sendBeacon`, `WebSocket`) or remote CDN/asset URLs (excl. `mraid.js`).
+- [x] All multimedia assets, scripts, and styles are inlined via Base64 (`data:` URI) with zero unbundled local file paths.
+

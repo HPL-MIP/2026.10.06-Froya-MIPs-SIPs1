@@ -217,7 +217,7 @@
       // interactive state, with a browser fallback for previews and bridge
       // failures.
       function handleClickAction() {
-        const mraid = window.mraid || {};
+        const mraid = window.mraid;
         const clickTarget =
           window.clickTag ||
           window.clickTag1 ||
@@ -226,24 +226,27 @@
           "";
 
         if (
-          mraid.open &&
+          mraid &&
           typeof mraid.open === "function" &&
-          window.isMraidUsable(mraid)
+          (typeof window.isMraidUsable === "function" ? window.isMraidUsable(mraid) : true)
         ) {
           try {
-            if (clickTarget) {
-              mraid.open(clickTarget);
-            } else {
-              mraid.open();
-            }
+            mraid.open(clickTarget);
             return;
           } catch (_error) {
-            // Fall through to the browser clickout if the native bridge fails.
+            console.error("[MRAID] open threw", _error);
           }
         }
 
-        window.open(clickTarget || "about:blank", "_blank", "noopener");
+        console.log("Network/browser fallback: ", clickTarget);
       }
+      window.handleMraidOpen = function(targetUrl) {
+        if (targetUrl) {
+          window.clickTag = targetUrl;
+        }
+        handleClickAction();
+      };
+      window["openClickThrough"] = handleClickAction;
 
       let lastTapAt = 0;
 

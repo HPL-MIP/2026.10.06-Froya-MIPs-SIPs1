@@ -4,7 +4,7 @@ import transitionAudio from '../assets/end/endscene.mp3';
 import { openClickthrough } from '../clickthrough';
 import { observeViewability } from '../mraid';
 
-const bridgeScript = `
+const bridgeScript = `<script src="mraid.js"></script>
 <script>
   try {
     window.mraid = parent.mraid || window.mraid;

@@ -11,8 +11,136 @@ export function packHtml(html) {
     else escaped.push(byte);
   }
   const payload = Buffer.from(escaped);
-  const prefix = `<!doctype html><html><head><meta charset="windows-1252"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Froya</title></head><body><script id="creative-data" type="application/octet-stream">`;
-  const suffix = `</script><script>
+  const prefix = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="windows-1252">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>Frøya Organics</title>
+  <script src="mraid.js"></script>
+  <script>
+  (function(){
+    var r = false, a = false;
+    function track(m){
+      if (a || !m || typeof m.addEventListener !== "function") return;
+      try {
+        m.addEventListener("ready", function(){ r = true; });
+        a = true;
+      } catch(e) {}
+    }
+    window.isMraidUsable = function(m){
+      if (!m) return false;
+      track(m);
+      if (typeof m.getState !== "function") return true;
+      try {
+        var s = m.getState();
+        return s === "default" || s === "expanded";
+      } catch(e) { return r; }
+    };
+    window.trackMraidReadiness = track;
+    window.initializeWhenMraidReady = function(init){
+      var m = window.mraid;
+      if (!m || typeof m.getState !== "function") { init(); return; }
+      track(m);
+      if (mraid.getState() === "loading") {
+        var h = function(){
+          if (typeof m.removeEventListener === "function") m.removeEventListener("ready", h);
+          r = true;
+          init();
+        };
+        if (typeof m.addEventListener === "function") {
+          m.addEventListener("ready", h);
+        } else {
+          init();
+        }
+        return;
+      }
+      init();
+    };
+  })();
+  </script>
+  <script>
+  /* MRAID v2.0 Compliant Click-Through Engine (AppLovin MIP) */
+  (function(){
+    function getClickTarget(u){
+      return u || window.clickTag || window.clickTag1 || window.clickthrough || window.clickThrough || "";
+    }
+    window.handleMraidOpen = function(targetUrl){
+      var mraid = window.mraid;
+      var url = getClickTarget(targetUrl);
+      if (mraid && typeof mraid.open === "function") {
+        var ready = true;
+        if (typeof window.isMraidUsable === "function") {
+          ready = window.isMraidUsable(mraid);
+        } else if (typeof mraid.getState === "function") {
+          var s = mraid.getState();
+          ready = (s === "default" || s === "expanded");
+        }
+        if (!ready) {
+          console.warn("[MRAID] bridge is not ready, attempting open anyway");
+        }
+        try {
+          mraid.open(url);
+          return true;
+        } catch(err) {
+          console.error("[MRAID] open threw", err);
+        }
+      }
+      console.log("Network/browser fallback: ", url);
+      return false;
+    };
+    window.handleClickAction = function(){ return window.handleMraidOpen(); };
+    window["openClickThrough"] = window.handleClickAction;
+
+    var lastTapAt = 0;
+    window.handleTap = function(event){
+      var now = Date.now();
+      if (now - lastTapAt < 500) return;
+      if (event && (event.type === "touchend" || event.type === "pointerup" || event.type === "click")) {
+        lastTapAt = now;
+      }
+      window.handleClickAction();
+    };
+  })();
+  </script>
+</head>
+<body>
+<script id="creative-data" type="application/octet-stream">`;
+
+  const suffix = `</script>
+<script>
+/* MRAID Viewability Lifecycle */
+(function(){
+  var p = [];
+  function sync(v){
+    var all = Array.prototype.slice.call(document.querySelectorAll("video,audio"));
+    if (!v) {
+      all.forEach(function(el){
+        if (!el.paused) { p.push(el); el.pause(); }
+      });
+    } else {
+      p.forEach(function(el){ el.play().catch(function(){}); });
+      p = [];
+    }
+  }
+  function setup(){
+    var m = window.mraid;
+    if (!m) return;
+    if (typeof m.isViewable === "function") {
+      try { sync(m.isViewable()); } catch(e) {}
+    }
+    if (typeof m.addEventListener === "function") {
+      try { m.addEventListener("viewableChange", sync); } catch(e) {}
+    }
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", setup);
+  } else {
+    setup();
+  }
+})();
+</script>
+<script>
 (async function () {
   try {
     var text = document.getElementById('creative-data').textContent;
@@ -35,6 +163,7 @@ export function packHtml(html) {
   }
 })();
 </script></body></html>`;
+
   // Verify the exact stored payload, including the browser's charset mapping.
   const text = new TextDecoder('windows-1252').decode(payload);
   const mapping = new Map();
